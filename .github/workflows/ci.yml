@@ -1,0 +1,87 @@
+name: CI Build & Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build & Test (${{ matrix.goos }}-${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.4'
+
+      - name: Use temporary Go module cache
+        if: runner.os != 'Windows'
+        run: |
+          export GOMODCACHE=$(mktemp -d)
+          echo "GOMODCACHE=$GOMODCACHE" >> $GITHUB_ENV
+
+      - name: Use temporary Go module cache on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tempDir = New-Item -ItemType Directory -Path ([System.IO.Path]::GetTempPath() + [System.Guid]::NewGuid())
+          echo "GOMODCACHE=$($tempDir.FullName)" | Out-File -Encoding ASCII -FilePath $env:GITHUB_ENV
+
+      - name: Build
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          BIN_NAME="satisclean-${{ matrix.goos }}-${{ matrix.goarch }}"
+          echo "Building $BIN_NAME..."
+          env GOFLAGS="-mod=readonly" GO111MODULE=on go build -v -o "$BIN_NAME" 2> >(grep -v "Cannot open: File exists" >&2)
+
+      - name: Build on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $BIN_NAME = "satisclean-${{ matrix.goos }}-${{ matrix.goarch }}.exe"
+          Write-Host "Building $BIN_NAME..."
+          go build -v -o $BIN_NAME
+
+      - name: Run tests on Linux/macOS
+        if: runner.os != 'Windows'
+        shell: bash
+        run: go test ./... -v
+
+      - name: Run tests on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go test ./... -v

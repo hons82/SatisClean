@@ -1,0 +1,109 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'   # Only runs on tag push, avoids double runs
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }}-${{ matrix.goarch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            goarch: arm64
+          - os: macos-latest
+            goos: darwin
+            goarch: amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+          - os: windows-latest
+            goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.4'
+
+      - name: Use isolated Go module cache
+        run: |
+          export GOMODCACHE=$(mktemp -d)
+          echo "GOMODCACHE=$GOMODCACHE" >> $GITHUB_ENV
+
+      - name: Build satisclean
+        shell: bash
+        run: |
+          BIN_NAME="satisclean-${{ matrix.goos }}-${{ matrix.goarch }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BIN_NAME="$BIN_NAME.exe"
+          fi
+
+          echo "Building $BIN_NAME..."
+          # Suppress any leftover tar warnings from modules
+          env GOFLAGS="-mod=readonly" GO111MODULE=on go build -v -o "$BIN_NAME" 2> >(grep -v "Cannot open: File exists" >&2)
+
+          # Compute SHA256 checksum cross-platform
+          if [[ "${{ matrix.goos }}" == "windows" ]]; then
+            powershell -Command "Get-FileHash '$BIN_NAME' -Algorithm SHA256 | ForEach-Object { '\$($_.Hash)  $BIN_NAME' } | Out-File -Encoding ascii '$BIN_NAME.sha256'"
+          else
+            sha256sum "$BIN_NAME" > "$BIN_NAME.sha256"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: satisclean-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            satisclean-${{ matrix.goos }}-${{ matrix.goarch }}*
+
+      - name: Print build summary
+        run: |
+          echo "================ Build Summary ================"
+          echo "OS: ${{ matrix.os }}, ARCH: ${{ matrix.goarch }}"
+          ls -l satisclean-${{ matrix.goos }}-${{ matrix.goarch }}*
+          echo "==============================================="
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Display downloaded artifacts
+        run: ls -R ./artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./artifacts/**/*
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
